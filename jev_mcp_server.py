@@ -90,6 +90,43 @@ TOOLS = [
             "required": ["states", "questions"],
         },
     },
+    {
+        "name": "jev_compare",
+        "description": (
+            "Experiment tool: judge the same state + questions two ways with the same internal LLM and "
+            "return them side by side. (1) jev: one-token logprob decision per question (fast, "
+            "probabilities). (2) plain: the model generates a JSON answer with a self-reported "
+            "confidence, like normal LLM usage (optionally with thinking). Returns per-question answers, "
+            "agreement, and latency/token cost of each. Use to evaluate whether jev-style decisions "
+            "match normal generation on real data."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "state": {"type": "string", "description": "The input to judge."},
+                "questions": QUESTIONS_SCHEMA,
+                "thinking": {"type": "boolean",
+                             "description": "Let the plain side think before answering (slower). Default false."},
+                "temperature": {"type": "number"},
+            },
+            "required": ["state", "questions"],
+        },
+    },
+    {
+        "name": "llm_chat",
+        "description": (
+            "Plain text generation with the internal LLM (no jev restriction). Use for comparison or when "
+            "a free-form answer from the internal model is needed."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string"},
+                "system": {"type": "string", "description": "Optional system prompt."},
+                "thinking": {"type": "boolean", "description": "Enable thinking. Default false."},
+                "max_tokens": {"type": "integer", "description": "Default 1024 (4096 with thinking)."},
+            },
+            "required": ["prompt"],
+        },
+    },
 ]
 
 _engine: SystemOneAPI | None = None
@@ -142,12 +179,23 @@ def _temperature(args: dict) -> float:
 
 
 def call_tool(name: str, args: dict) -> dict:
+    if name == "llm_chat":
+        msgs = ([{"role": "system", "content": args["system"]}] if args.get("system") else [])
+        msgs.append({"role": "user", "content": args["prompt"]})
+        thinking = bool(args.get("thinking"))
+        r = engine().chat(msgs, thinking=thinking,
+                          max_tokens=int(args.get("max_tokens") or (4096 if thinking else 1024)))
+        r["reasoning"] = r["reasoning"][:4000]  # 컨텍스트 절약
+        return _round(r)
     questions = args.get("questions")
     _validate(questions)
     t = _temperature(args)
     if name == "jev_decide":
         r = engine().system_one(args["state"], questions, temperature=t)
         return _round(r)
+    if name == "jev_compare":
+        return _round(engine().compare(args["state"], questions,
+                                       thinking=bool(args.get("thinking")), temperature=t))
     if name == "jev_decide_batch":
         states = args.get("states")
         if not isinstance(states, list) or not states or len(states) > MAX_BATCH:

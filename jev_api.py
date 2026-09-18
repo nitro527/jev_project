@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import ssl
 import string
 import time
@@ -109,6 +110,83 @@ def restricted_softmax(label_logprobs: list[float], temperature: float = 1.0) ->
     return [w / s for w in ws]
 
 
+# --- 비교용: 일반 생성 방식 (모델이 JSON으로 답 + 자기 확신도를 쓰게 함) ---
+
+def build_plain_prompt(state_text: str, questions: dict[str, dict]) -> str:
+    lines = [f"State:\n{state_text}\n", "Answer every question below."]
+    for k, q in questions.items():
+        t = q["type"]
+        if t == "noul":
+            lines.append(f'- "{k}": {q["instructions"]} Answer "yes" or "no".')
+        elif t == "choice":
+            opts = "; ".join(f"{n} = {d}" for n, d in q["choices"].items())
+            lines.append(f'- "{k}": {q["instructions"]} Options: {opts}. Answer with one option name.')
+        else:
+            lvls = "; ".join(f"{i + 1} = {s}" for i, s in enumerate(q["scale"]))
+            lines.append(f'- "{k}": {q["instructions"]} Levels: {lvls}. Answer with the level number.')
+    lines.append('\nReply with ONLY a JSON object, no other text, in this form: '
+                 '{"<question key>": {"answer": <answer>, "confidence": <0-100>}, ...}')
+    return "\n".join(lines)
+
+
+def parse_plain_answers(text: str, questions: dict[str, dict]) -> tuple[dict, str | None]:
+    """모델이 쓴 JSON을 파싱해 질문 타입별로 정규화. (answers, error)"""
+    s, e = text.find("{"), text.rfind("}")
+    if s < 0 or e < s:
+        return {}, "no JSON object in output"
+    try:
+        raw = json.loads(text[s:e + 1])
+    except json.JSONDecodeError as ex:
+        return {}, f"invalid JSON: {ex}"
+    out = {}
+    for k, q in questions.items():
+        item = raw.get(k)
+        if isinstance(item, dict):
+            ans, conf = item.get("answer"), item.get("confidence")
+        else:
+            ans, conf = item, None
+        norm = None
+        if q["type"] == "noul" and isinstance(ans, (str, bool)):
+            a = str(ans).strip().lower()
+            norm = "yes" if a in ("yes", "true", "y") else "no" if a in ("no", "false", "n") else None
+        elif q["type"] == "choice" and isinstance(ans, str):
+            lut = {n.lower(): n for n in q["choices"]}
+            norm = lut.get(ans.strip().lower())
+        elif q["type"] == "score":
+            try:
+                i = int(str(ans).strip())
+                norm = q["scale"][i - 1] if 1 <= i <= len(q["scale"]) else None
+            except ValueError:
+                lut = {l.lower(): l for l in q["scale"]}
+                norm = lut.get(str(ans).strip().lower())
+        try:
+            conf = float(conf) / 100 if conf is not None else None
+        except (TypeError, ValueError):
+            conf = None
+        out[k] = {"answer": norm, "raw_answer": ans, "self_confidence": conf}
+    return out, None
+
+
+def jev_label(q: dict, ans: dict) -> str:
+    """jev 답을 plain 답과 비교 가능한 값으로."""
+    if q["type"] == "noul":
+        return "yes" if ans["noul"] >= 0.5 else "no"
+    if q["type"] == "choice":
+        return ans["choice"]
+    return ans["level"]
+
+
+def split_thinking(content: str, reasoning: str = "") -> tuple[str, str]:
+    """서버에 reasoning parser가 없으면 <think>...</think>가 content에 섞여 온다."""
+    m = re.search(r"<think>(.*?)</think>", content, re.S)
+    if m:
+        return content[m.end():].strip(), (reasoning or m.group(1)).strip()
+    if "</think>" in content:  # template이 <think>를 프롬프트에 넣은 경우 닫는 태그만 온다
+        r, c = content.split("</think>", 1)
+        return c.strip(), (reasoning or r).strip()
+    return content.strip(), reasoning.strip()
+
+
 def _norm_token(t: str) -> str:
     # 서버에 따라 " A", "ĠA"(byte-level BPE), "▁A"(sentencepiece)로 올 수 있다
     return t.replace("Ġ", " ").replace("▁", " ").strip()
@@ -198,6 +276,65 @@ class SystemOneAPI:
             merged[k] = math.log(math.exp(merged[k]) + math.exp(logprob)) if k in merged else logprob
         return merged, first, (r.get("usage") or {}).get("prompt_tokens", 0)
 
+    def chat(self, messages: list[dict], *, max_tokens: int = 1024, thinking: bool = False,
+             temperature: float = 0.0) -> dict:
+        """일반 텍스트 생성. thinking 제어는 chat_template_kwargs로 (mode='chat'일 때만 전송)."""
+        body = {"model": self.model, "messages": messages, "max_tokens": max_tokens,
+                "temperature": temperature}
+        if self.mode == "chat":
+            body["chat_template_kwargs"] = {"enable_thinking": thinking}
+        body.update(self.extra_body)
+        t0 = time.perf_counter()
+        r = http_json("POST", f"{self.base_url}/chat/completions", body, api_key=self.api_key,
+                      timeout=max(self.timeout, 300), insecure=self.insecure)
+        latency_ms = (time.perf_counter() - t0) * 1000
+        c = r["choices"][0]
+        msg = c.get("message") or {}
+        content, reasoning = split_thinking(msg.get("content") or "",
+                                            msg.get("reasoning_content") or msg.get("reasoning") or "")
+        u = r.get("usage") or {}
+        return {"content": content, "reasoning": reasoning, "finish_reason": c.get("finish_reason"),
+                "usage": {"input_tokens": u.get("prompt_tokens", 0),
+                          "output_tokens": u.get("completion_tokens", 0),
+                          "latency_ms": latency_ms}}
+
+    def plain_decide(self, state: Any, questions: dict[str, dict], *, thinking: bool = False,
+                     max_tokens: int | None = None) -> dict:
+        """비교 기준: 모든 질문을 한 프롬프트에 넣고 모델이 JSON으로 답을 '생성'하게 한다."""
+        prompt = build_plain_prompt(state_to_text(state), questions)
+        r = self.chat([{"role": "user", "content": prompt}], thinking=thinking,
+                      max_tokens=max_tokens or (4096 if thinking else 512))
+        answers, err = parse_plain_answers(r["content"], questions)
+        out = {"answers": answers, "usage": r["usage"], "finish_reason": r["finish_reason"],
+               "output": r["content"][:2000]}
+        if r["reasoning"]:
+            out["reasoning_chars"] = len(r["reasoning"])
+        if err:
+            out["parse_error"] = err
+        return out
+
+    def compare(self, state: Any, questions: dict[str, dict], *, thinking: bool = False,
+                temperature: float = 1.0) -> dict:
+        """같은 입력을 jev 방식과 일반 생성 방식으로 각각 판단해 나란히 반환."""
+        j = self.system_one(state, questions, temperature=temperature)
+        p = self.plain_decide(state, questions, thinking=thinking)
+        rows, agree = {}, 0
+        for k, q in questions.items():
+            ja = j["answers"][k]
+            pa = p["answers"].get(k, {})
+            jl = jev_label(q, ja)
+            jconf = ja["noul"] if q["type"] == "noul" else ja.get("confidence",
+                                                               max(ja.get("distribution", {0: 0}).values()))
+            if q["type"] == "noul" and jl == "no":
+                jconf = 1 - jconf
+            same = jl == pa.get("answer")
+            agree += same
+            rows[k] = {"jev": jl, "jev_prob": jconf, "plain": pa.get("answer"),
+                       "plain_self_confidence": pa.get("self_confidence"), "agree": same}
+        return {"comparison": rows, "agreement": f"{agree}/{len(questions)}",
+                "cost": {"jev": j["usage"], "plain": p["usage"]},
+                "jev": j["answers"], "plain": p}
+
     def _ask(self, state_text: str, q: dict, temperature: float) -> tuple[dict, int]:
         labels, names, shown = build_options(q)
         top, first, n_tok = self.top_tokens(build_user_content(state_text, q, labels, shown))
@@ -219,5 +356,6 @@ class SystemOneAPI:
             results = {k: f.result() for k, f in futs.items()}
         return {"answers": {k: a for k, (a, _) in results.items()},
                 "usage": {"input_tokens": sum(n for _, n in results.values()),
+                          "output_tokens": len(questions),  # 질문당 1토큰
                           "questions": len(questions),
                           "latency_ms": (time.perf_counter() - t0) * 1000}}

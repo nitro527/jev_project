@@ -79,6 +79,9 @@ claude mcp add jev -e JEV_BASE_URL=http://<게이트웨이>/v1 -e JEV_MODEL=<모
 
 - **`jev_decide`** `{state, questions, temperature?}` — state 하나에 여러 질문을 병렬로.
 - **`jev_decide_batch`** `{states[], questions, temperature?}` — 같은 질문을 최대 200개 state에. 로그 윈도 대량 트리아지용.
+- **`jev_compare`** `{state, questions, thinking?, temperature?}` — 같은 입력을 ① jev(1토큰 logprob) ② 일반 생성
+  (모델이 JSON으로 답 + 자기 확신도를 씀, thinking 선택)으로 각각 판단해 답/일치 여부/지연/토큰을 나란히 반환. 실험용.
+- **`llm_chat`** `{prompt, system?, thinking?, max_tokens?}` — 제한 없는 일반 텍스트 생성.
 
 질문 형식 (Jev API와 동일한 모양):
 ```json

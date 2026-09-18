@@ -1,6 +1,6 @@
 """로컬 검증용: Qwen3.5-4B를 vLLM의 OpenAI 호환 응답 형식으로 흉내 내는 서버.
 
-max_tokens=1 + logprobs 요청만 지원한다 (jev_api / probe_endpoint 테스트용).
+max_tokens=1 + logprobs(판단) 요청과 chat 일반 생성을 지원한다 (jev_api / probe_endpoint 테스트용).
     python mock_vllm_server.py --port 8000
 """
 import argparse
@@ -37,8 +37,19 @@ def next_token(prompt: str, k: int):
     return top[0], top[:k], ids.input_ids.shape[1]
 
 
-def usage(n):
-    return {"prompt_tokens": n, "completion_tokens": 1, "total_tokens": n + 1}
+@torch.inference_mode()
+def generate(prompt: str, max_new: int, temperature: float):
+    ids = tok(prompt, return_tensors="pt").to("cuda")
+    kw = {"do_sample": True, "temperature": temperature} if temperature > 0 else {"do_sample": False}
+    with lock:
+        out = model.generate(**ids, max_new_tokens=max_new, **kw)
+    new = out[0, ids.input_ids.shape[1]:]
+    finish = "stop" if len(new) < max_new else "length"
+    return tok.decode(new, skip_special_tokens=True), ids.input_ids.shape[1], len(new), finish
+
+
+def usage(n, m=1):
+    return {"prompt_tokens": n, "completion_tokens": m, "total_tokens": n + m}
 
 
 class H(BaseHTTPRequestHandler):
@@ -69,6 +80,15 @@ class H(BaseHTTPRequestHandler):
             kwargs = body.get("chat_template_kwargs") or {}
             prompt = tok.apply_chat_template(body["messages"], tokenize=False, add_generation_prompt=True,
                                              enable_thinking=kwargs.get("enable_thinking", True))
+            max_tokens = body.get("max_tokens") or 1024
+            if max_tokens > 1:  # 일반 생성 (logprobs 미지원)
+                text, n, m, finish = generate(prompt, max_tokens, body.get("temperature", 0) or 0)
+                return self.send(200, {
+                    "id": f"chatcmpl-{uuid.uuid4().hex}", "object": "chat.completion",
+                    "created": int(time.time()), "model": args.served_name,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                                 "logprobs": None, "finish_reason": finish}],
+                    "usage": usage(n, m)})
             (t, lp), top, n = next_token(prompt, k)
             entry = lambda tt, ll: {"token": tt, "logprob": ll, "bytes": list(tt.encode())}  # noqa: E731
             logprobs = ({"content": [{**entry(t, lp), "top_logprobs": [entry(a, b) for a, b in top] if k else []}]}

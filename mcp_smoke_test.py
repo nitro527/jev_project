@@ -62,6 +62,30 @@ try:
         print(f"  [{item['index']}] urgent={a['urgent']['noul']:.2f} intent={a['intent']['choice']}"
               f"({a['intent']['confidence']:.2f}) frustration={a['frustration']['level']}")
 
+    for i, thinking in ((6, False), (7, True)):
+        t = time.time()
+        r = rpc(i, "tools/call", {"name": "jev_compare", "arguments": {
+            "state": "Help! My payouts have been failing for 3 days.", "questions": QUESTIONS,
+            "thinking": thinking}})["result"]
+        if r["isError"]:
+            print(f"\njev_compare thinking={thinking} ERROR:", r["content"][0]["text"])
+            continue
+        out = json.loads(r["content"][0]["text"])
+        print(f"\njev_compare thinking={thinking} ({(time.time() - t) * 1000:.0f}ms) "
+              f"agreement={out['agreement']}")
+        for k, row in out["comparison"].items():
+            print(f"  {k:<12} jev={row['jev']!s:<20}({row['jev_prob']:.2f})  "
+                  f"plain={row['plain']!s:<20}(self {row['plain_self_confidence']})  agree={row['agree']}")
+        c = out["cost"]
+        print(f"  cost jev: {c['jev']['latency_ms']:.0f}ms in={c['jev']['input_tokens']} out={c['jev']['output_tokens']}"
+              f" | plain: {c['plain']['latency_ms']:.0f}ms in={c['plain']['input_tokens']} out={c['plain']['output_tokens']}"
+              + (f" parse_error={out['plain']['parse_error']}" if "parse_error" in out["plain"] else ""))
+
+    r = rpc(8, "tools/call", {"name": "llm_chat", "arguments": {
+        "prompt": "In one sentence, what is HARQ in LTE?"}})["result"]
+    out = json.loads(r["content"][0]["text"])
+    print(f"\nllm_chat: {out['content']!r} ({out['usage']['latency_ms']:.0f}ms, out={out['usage']['output_tokens']})")
+
     r = rpc(5, "tools/call", {"name": "jev_decide", "arguments": {
         "state": "x", "questions": {"bad": {"type": "choice", "instructions": "?"}}}})["result"]
     print("\nvalidation error case: isError =", r["isError"], "|", r["content"][0]["text"])
