@@ -17,6 +17,8 @@ MCP 서버로 감싸 Claude Code / opencode에서 도구로 호출하기 위한 
 | `jev_mcp_server.py` | MCP stdio 서버 (`jev_decide`, `jev_decide_batch`) | 표준 라이브러리 |
 | `probe_endpoint.py` | 사내 엔드포인트가 이 방식을 지원하는지 점검 | 표준 라이브러리 |
 | `mcp_smoke_test.py` | MCP 서버를 stdio로 띄워 핸드셰이크/호출 검증 | 표준 라이브러리 |
+| `bench/bench_compare.py` | jev vs 일반 생성 60건 정량 비교 (기준 결과: `bench/results_qwen3.5-4b_local.json`) | 표준 라이브러리 |
+| `docs/HANDOFF.md` | **인수인계 문서** — 설계 이유, 실패/해결 기록, 벤치마크, 사내 적용 절차, TODO | – |
 | `jev_local.py` | (집 PC) transformers로 전체 logits를 직접 읽는 기준 구현 | torch, transformers |
 | `mock_vllm_server.py` | (집 PC) 로컬 모델로 vLLM 응답 형식을 흉내 내는 테스트 서버 | torch, transformers |
 
