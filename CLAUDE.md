@@ -4,6 +4,7 @@
 MCP 서버로 Claude Code / opencode에 노출하는 프로젝트.
 
 **작업 전에 `docs/HANDOFF.md`를 먼저 읽어라.** 설계 이유, 실패와 해결 기록, 벤치마크, 사내 적용 절차와 TODO가 있다.
+성능 개선 기법과 벤치마크 설계는 `docs/IMPROVE_AND_BENCHMARK.md`에 있다.
 
 ## 규칙
 - 이 저장소는 **public**이다. 사내 엔드포인트 주소, API 키, 실제 로그, 사내 데이터, 사내 모델 결과 파일을 커밋하지 마라.
@@ -19,4 +20,5 @@ MCP 서버로 Claude Code / opencode에 노출하는 프로젝트.
 python probe_endpoint.py                  # 엔드포인트 점검 (JEV_BASE_URL, JEV_MODEL 필요)
 python mcp_smoke_test.py                  # MCP 서버 전 도구 검증
 python bench/bench_compare.py --out x.json   # jev vs 일반 생성 60건 비교
+python bench/improve_eval.py --plain         # 개선 기법 비교 (BGL/BoolQ/AG News, dev/test)
 ```

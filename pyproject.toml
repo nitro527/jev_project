@@ -16,3 +16,9 @@ explicit = true
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu126" }
+
+[dependency-groups]
+bench = [
+    "pandas>=3.0.6",
+    "pyarrow>=25.0.1",
+]

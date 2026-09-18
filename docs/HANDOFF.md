@@ -405,6 +405,11 @@ python bench/bench_compare.py --out bench_qwen38.json
 
 ## 8. 사내 Claude Code에게 요청하는 작업 목록 (우선순위 순)
 
+> 성능 개선 기법 실험과 벤치마크 설계는 **`docs/IMPROVE_AND_BENCHMARK.md`**에 있다.
+> 핵심은 이렇다. 도메인 로그 판단은 few-shot과 소량 라벨 보정으로 크게 좋아진다(BGL 0.675 → 0.925).
+> 일반 분류는 raw로 충분하다. 계산·추론은 코드나 thinking cascade로 처리한다.
+> 사내에서는 `python bench/improve_eval.py`로 같은 표를 다시 만든다.
+
 1. **7.3 probe를 실행하고** 결과를 사용자에게 분기표 기준으로 보고한다. logprobs가 불가능하면 즉시 멈추고 알린다.
 2. probe 결과에 맞춰 `JEV_MODE`와 `JEV_TOP_LOGPROBS`를 정하고, `mcp_smoke_test.py`를 통과시킨다.
 3. Claude Code에 MCP를 등록한다. **사용자 설정 파일을 바꾸기 전에 확인을 받는다.**
