@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "jev": {
+      "command": "python",
+      "args": ["/path/to/jev_project/jev_mcp_server.py"],
+      "env": {
+        "JEV_BASE_URL": "${JEV_BASE_URL}",
+        "JEV_MODEL": "${JEV_MODEL}",
+        "JEV_API_KEY": "${JEV_API_KEY:-}",
+        "JEV_INSECURE": "${JEV_INSECURE:-0}"
+      }
+    }
+  }
+}

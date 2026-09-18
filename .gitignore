@@ -1,0 +1,10 @@
+.venv/
+models/
+__pycache__/
+*.pyc
+.env
+*.log
+.claude/settings.local.json
+# 사내 엔드포인트 정보가 들어가는 실제 설정 파일
+.mcp.json
+opencode.json

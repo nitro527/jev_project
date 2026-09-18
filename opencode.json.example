@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "jev": {
+      "type": "local",
+      "command": ["python", "/path/to/jev_project/jev_mcp_server.py"],
+      "environment": {
+        "JEV_BASE_URL": "{env:JEV_BASE_URL}",
+        "JEV_MODEL": "{env:JEV_MODEL}",
+        "JEV_API_KEY": "{env:JEV_API_KEY}"
+      },
+      "enabled": true
+    }
+  }
+}
