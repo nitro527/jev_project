@@ -12,8 +12,10 @@
   devcal     dev 라벨로 temperature + 클래스별 bias를 학습해 적용 (라벨 필요)
   plain      (--plain) 일반 생성으로 JSON 답 (비교 기준)
   cascade    (--cascade N) raw 확신도 < 0.7인 건만 think-then-decide로 재판단 (태스크당 최대 N건)
+  plain+thinking (--plain-thinking N) 평소 방식, 느려서 앞쪽 N건 표본만 (같은 표본에서 다른 기법과 비교)
 
 지표: acc(+95% bootstrap CI), macro-F1, Brier, ECE, AUROC(확신도로 정오 구분), AURC, 상위 50% 확신도 정확도,
+      항목당 입력/출력 토큰, 지연 p50/p95, raw 대비 토큰/시간 배수, 1회성 준비 비용(보정용 호출·라벨 수),
       noul의 yes 비율(치우침), 항목당 호출 수/지연.
 결과: bench/out/improve_<시각>.json, 호출 캐시: bench/out/cache.jsonl (재실행 시 재사용)
 """
@@ -72,6 +74,17 @@ class Caller:
         self.fh.write(json.dumps(rec) + "\n")
         self.fh.flush()
         return rec
+
+    def memo(self, key: str, fn) -> dict:
+        """plain / thinking 같은 비싼 호출 결과(JSON)를 캐시한다."""
+        k = hashlib.sha1(f"{self.api.model}|{key}".encode()).hexdigest()
+        if k in self.cache:
+            return self.cache[k]["v"]
+        v = fn()
+        self.cache[k] = {"k": k, "v": v}
+        self.fh.write(json.dumps({"k": k, "v": v}, ensure_ascii=False) + "\n")
+        self.fh.flush()
+        return v
 
 
 def softmax(xs, T=1.0):
@@ -202,12 +215,21 @@ def metrics(probs: list[list[float]], gold: list[int], names: list[str], kind: s
 
 # --- plain / cascade ---
 
-def plain_pred(api: SystemOneAPI, state: str, spec: dict, names: list[str]) -> tuple[list[float] | None, float]:
+def plain_pred(caller: Caller, state: str, spec: dict, names: list[str],
+               thinking: bool = False) -> tuple[list[float] | None, dict]:
+    """(확률 벡터 또는 파싱 실패 시 None, 비용 {in, out, ms})."""
+    api = caller.api
     q = ({"type": "noul", "instructions": spec["instructions"]} if spec["kind"] == "noul"
          else {"type": "choice", "instructions": spec["instructions"], "choices": spec["options"]})
-    t0 = time.perf_counter()
-    r = api.plain_decide(state, {"answer": q})
-    ms = (time.perf_counter() - t0) * 1000
+
+    def run():
+        t0 = time.perf_counter()
+        r = api.plain_decide(state, {"answer": q}, thinking=thinking)
+        return {"answers": r["answers"], "output": r["output"], "in": r["usage"]["input_tokens"],
+                "out": r["usage"]["output_tokens"], "ms": (time.perf_counter() - t0) * 1000}
+
+    r = caller.memo(f"plain|{thinking}|{spec['instructions']}|{state}", run)
+    cost = {"in": r["in"], "out": r["out"], "ms": r["ms"]}
     ans = r["answers"].get("answer", {}).get("answer")
     if ans is None:  # 키 불일치 관대 처리 (HANDOFF TODO #1)
         o = r["output"]
@@ -218,28 +240,37 @@ def plain_pred(api: SystemOneAPI, state: str, spec: dict, names: list[str]) -> t
         except (json.JSONDecodeError, ValueError):
             pass
     if ans is None:
-        return None, ms
-    return [1.0 if n == ans else 0.0 for n in names], ms
+        return None, cost
+    return [1.0 if n == ans else 0.0 for n in names], cost
 
 
-def think_then_decide(api: SystemOneAPI, state: str, spec: dict, budget: int) -> tuple[list[float], float, int]:
+def think_then_decide(caller: Caller, state: str, spec: dict, budget: int) -> tuple[list[float], dict]:
+    """thinking으로 풀이를 생성한 뒤, 풀이 끝 자리에서 라벨 확률을 읽는다. (확률, 비용 {in, out, ms})."""
+    api = caller.api
     names, shown = task_options(spec)
     labels = list(LETTERS[: len(shown)])
     content = build_user_content(state, {"type": "choice", "instructions": spec["instructions"]}, labels, shown)
-    t0 = time.perf_counter()
-    g = api.chat([{"role": "user", "content": content}], thinking=True, max_tokens=budget)
-    reasoning = g["reasoning"] or g["content"]
-    prompt = (f"<|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n<think>\n"
-              f"{reasoning.strip()}\n</think>\n\n")
-    r = http_json("POST", f"{api.base_url}/completions",
-                  {"model": api.model, "prompt": prompt, "max_tokens": 1, "temperature": 0, "logprobs": 20},
-                  api_key=api.api_key, insecure=api.insecure, timeout=300)
-    top = {}
-    for t, lp in r["choices"][0]["logprobs"]["top_logprobs"][0].items():
-        k = _norm_token(t)
-        top[k] = math.log(math.exp(top[k]) + math.exp(lp)) if k in top else lp
-    p = softmax([top.get(l, -1e9) for l in labels])
-    return p, (time.perf_counter() - t0) * 1000, g["usage"]["output_tokens"]
+
+    def run():
+        t0 = time.perf_counter()
+        g = api.chat([{"role": "user", "content": content}], thinking=True, max_tokens=budget)
+        reasoning = g["reasoning"] or g["content"]
+        prompt = (f"<|im_start|>user\n{content}<|im_end|>\n<|im_start|>assistant\n<think>\n"
+                  f"{reasoning.strip()}\n</think>\n\n")
+        r = http_json("POST", f"{api.base_url}/completions",
+                      {"model": api.model, "prompt": prompt, "max_tokens": 1, "temperature": 0, "logprobs": 20},
+                      api_key=api.api_key, insecure=api.insecure, timeout=300)
+        top = {}
+        for t, lp in r["choices"][0]["logprobs"]["top_logprobs"][0].items():
+            k = _norm_token(t)
+            top[k] = math.log(math.exp(top[k]) + math.exp(lp)) if k in top else lp
+        # 입력: 생성 호출 입력 + 판독 호출 입력(풀이 포함) / 출력: 풀이 토큰 + 1
+        return {"p": softmax([top.get(l, -1e9) for l in labels]),
+                "in": g["usage"]["input_tokens"] + (r.get("usage") or {}).get("prompt_tokens", 0),
+                "out": g["usage"]["output_tokens"] + 1, "ms": (time.perf_counter() - t0) * 1000}
+
+    r = caller.memo(f"think|{budget}|{content}", run)
+    return r["p"], {"in": r["in"], "out": r["out"], "ms": r["ms"]}
 
 
 # --- 실행 ---
@@ -247,142 +278,196 @@ def think_then_decide(api: SystemOneAPI, state: str, spec: dict, budget: int) ->
 SIZES = {"bgl": (20, 80), "boolq": (40, 120), "agnews": (40, 120)}
 
 
-def run_task(task: str, api: SystemOneAPI, caller: Caller, do_plain: bool, cascade_cap: int) -> dict:
+def cost_of(rec: dict) -> dict:
+    """label_logprobs 호출 1회의 비용 (출력은 1토큰)."""
+    return {"in": rec["in"], "out": 1, "ms": rec["ms"]}
+
+
+def add_costs(*cs: dict) -> dict:
+    return {k: sum(c[k] for c in cs) for k in ("in", "out", "ms")}
+
+
+def cost_summary(costs: list[dict]) -> dict:
+    ms = sorted(c["ms"] for c in costs)
+    n = len(costs)
+    return {"in_tok": sum(c["in"] for c in costs) / n, "out_tok": sum(c["out"] for c in costs) / n,
+            "ms_p50": ms[n // 2], "ms_p95": ms[min(n - 1, int(n * 0.95))], "ms_mean": sum(ms) / n}
+
+
+def run_task(task: str, caller: Caller, do_plain: bool, cascade_cap: int, cascade_budget: int,
+             plain_think_n: int) -> dict:
     spec = D.TASKS[task]
     names, _ = task_options(spec)
     dev, test = D.load(task, *SIZES[task])
     gold = [names.index(it["gold"]) for it in test]
+    n = len(test)
     ident = list(range(len(names)))
     perms = perms_for(len(names), spec["kind"])
-    res, calls, lat = {}, {}, {}
+    res, cost, calls, setup = {}, {}, {}, {}
 
-    def timed(label, fn):
-        t0 = time.perf_counter()
-        out = fn()
-        lat[label] = (time.perf_counter() - t0) * 1000 / len(test)
-        return out
+    print(f"\n### {task} (dev {len(dev)}, test {n})", flush=True)
 
-    print(f"\n### {task} (dev {len(dev)}, test {len(test)})", flush=True)
-    raw = timed("raw", lambda: [dist(caller, it["state"], spec, ident)[0] for it in test])
-    res["raw"], calls["raw"] = raw, 1
+    # raw
+    raw_pairs = [dist(caller, it["state"], spec, ident) for it in test]
+    raw = [p for p, _ in raw_pairs]
+    raw_cost = [cost_of(r) for _, r in raw_pairs]
+    res["raw"], cost["raw"], calls["raw"] = raw, raw_cost, 1
     print("  raw done", flush=True)
 
-    # 호출 한 번의 실제 지연(캐시 무관): 캐시 기록의 ms 사용
-    per_call_ms = [caller.label_logprobs(it["state"], spec["instructions"], task_options(spec)[1])["ms"]
-                   for it in test]
-    per_call_ms.sort()
-
-    by_perm = timed("perm", lambda: [[dist(caller, it["state"], spec, pm)[0] for pm in perms] for it in test])
+    # perm: 순서마다 1회씩 (순차 합산 비용; 병렬로 보내면 지연은 줄어든다)
+    perm_pairs = [[dist(caller, it["state"], spec, pm) for pm in perms] for it in test]
+    by_perm = [[p for p, _ in ps] for ps in perm_pairs]
     res["perm"] = [normalize([sum(x) / len(x) for x in zip(*ps)]) for ps in by_perm]
+    cost["perm"] = [add_costs(*[cost_of(r) for _, r in ps]) for ps in perm_pairs]
     calls["perm"] = len(perms)
     print("  perm done", flush=True)
 
-    # contextual calibration: 순서별로 내용 없는 입력의 분포를 구해 나눔
-    cf = {tuple(pm): normalize([sum(x) / len(CONTENT_FREE) for x in
-                                zip(*[dist(caller, s, spec, pm)[0] for s in CONTENT_FREE])]) for pm in perms}
+    # contextual calibration: 내용 없는 입력은 태스크당 한 번 (준비 비용)
+    cf_pairs = {tuple(pm): [dist(caller, s, spec, pm) for s in CONTENT_FREE] for pm in perms}
+    cf = {k: normalize([sum(x) / len(CONTENT_FREE) for x in zip(*[p for p, _ in v])]) for k, v in cf_pairs.items()}
+    setup["cc"] = {"calls": len(CONTENT_FREE)}
+    setup["perm+cc"] = {"calls": len(CONTENT_FREE) * len(perms)}
     cc = lambda p, pm: normalize([v / max(c, 1e-6) for v, c in zip(p, cf[tuple(pm)])])  # noqa: E731
-    res["cc"] = [cc(p, ident) for p in raw]
-    calls["cc"] = 1
+    res["cc"], cost["cc"], calls["cc"] = [cc(p, ident) for p in raw], raw_cost, 1
     res["perm+cc"] = [normalize([sum(x) / len(x) for x in zip(*[cc(p, pm) for p, pm in zip(ps, perms)])])
                       for ps in by_perm]
-    calls["perm+cc"] = len(perms)
+    cost["perm+cc"], calls["perm+cc"] = cost["perm"], len(perms)
 
-    prior = normalize([sum(x) / len(raw) for x in zip(*raw)])  # batch calibration
+    # batch calibration: 추가 호출 없음
+    prior = normalize([sum(x) / n for x in zip(*raw)])
     res["bc"] = [normalize([v / max(c, 1e-6) for v, c in zip(p, prior)]) for p in raw]
-    calls["bc"] = 1
+    cost["bc"], calls["bc"] = raw_cost, 1
 
+    # few-shot: 프롬프트가 길어져 입력 토큰이 는다
     shots = pick_fewshot(dev, names, 2 if spec["kind"] == "noul" else 1)
-    res["fewshot"] = timed("fewshot", lambda: [dist(caller, fewshot_state(shots, spec, it["state"]), spec, ident)[0]
-                                               for it in test])
-    calls["fewshot"] = 1
+    fs_pairs = [dist(caller, fewshot_state(shots, spec, it["state"]), spec, ident) for it in test]
+    fs = [p for p, _ in fs_pairs]
+    fs_cost = [cost_of(r) for _, r in fs_pairs]
+    res["fewshot"], cost["fewshot"], calls["fewshot"] = fs, fs_cost, 1
     print("  fewshot done", flush=True)
 
+    # devcal: dev 라벨로 한 번 학습 (준비 비용), 적용은 무료
     dev_gold = [names.index(it["gold"]) for it in dev]
-    dev_raw = [dist(caller, it["state"], spec, ident)[0] for it in dev]
-    T, b = fit_devcal([[math.log(max(v, 1e-12)) for v in p] for p in dev_raw], dev_gold)
-    res["devcal"] = [apply_devcal(p, T, b) for p in raw]
-    calls["devcal"] = 1
+    dev_pairs = [dist(caller, it["state"], spec, ident) for it in dev]
+    T, b = fit_devcal([[math.log(max(v, 1e-12)) for v in p] for p, _ in dev_pairs], dev_gold)
+    res["devcal"], cost["devcal"], calls["devcal"] = [apply_devcal(p, T, b) for p in raw], raw_cost, 1
+    setup["devcal"] = {"calls": len(dev), "labels": len(dev)}
 
-    # fewshot 위에 보정 얹기 (fewshot은 기준선이 크게 이동하므로)
-    fs = res["fewshot"]
-    fs_prior = normalize([sum(x) / len(fs) for x in zip(*fs)])
+    fs_prior = normalize([sum(x) / n for x in zip(*fs)])
     res["fewshot+bc"] = [normalize([v / max(c, 1e-6) for v, c in zip(p, fs_prior)]) for p in fs]
-    calls["fewshot+bc"] = 1
+    cost["fewshot+bc"], calls["fewshot+bc"] = fs_cost, 1
     shot_ids = {s["id"] for s in shots}
     dev_fs_items = [it for it in dev if it["id"] not in shot_ids]
-    dev_fs = [dist(caller, fewshot_state(shots, spec, it["state"]), spec, ident)[0] for it in dev_fs_items]
-    T2, b2 = fit_devcal([[math.log(max(v, 1e-12)) for v in p] for p in dev_fs],
+    dev_fs_pairs = [dist(caller, fewshot_state(shots, spec, it["state"]), spec, ident) for it in dev_fs_items]
+    T2, b2 = fit_devcal([[math.log(max(v, 1e-12)) for v in p] for p, _ in dev_fs_pairs],
                         [names.index(it["gold"]) for it in dev_fs_items])
     res["fewshot+devcal"] = [apply_devcal(p, T2, b2) for p in fs]
-    calls["fewshot+devcal"] = 1
+    cost["fewshot+devcal"], calls["fewshot+devcal"] = fs_cost, 1
+    setup["fewshot+devcal"] = {"calls": len(dev_fs_items), "labels": len(dev)}
 
     extra = {"devcal_T": T, "devcal_bias": b, "cf_prior_identity": cf[tuple(ident)], "batch_prior": prior,
-             "call_ms_p50": per_call_ms[len(per_call_ms) // 2], "fewshot_ids": [s["id"] for s in shots]}
+             "fewshot_ids": [s["id"] for s in shots], "setup_costs": setup}
 
     if do_plain:
-        preds, ms_list, fails = [], [], 0
+        preds, pc, fails = [], [], 0
         for it in test:
-            p, ms = plain_pred(api, it["state"], spec, names)
-            ms_list.append(ms)
+            p, c = plain_pred(caller, it["state"], spec, names)
+            pc.append(c)
             if p is None:
                 fails += 1
                 p = [1 / len(names)] * len(names)  # 파싱 실패 = 무작위 (오답 처리 효과)
             preds.append(p)
-        res["plain"], calls["plain"] = preds, 1
+        res["plain"], cost["plain"], calls["plain"] = preds, pc, 1
         extra["plain_parse_fail"] = fails
-        extra["plain_ms_p50"] = sorted(ms_list)[len(ms_list) // 2]
         print("  plain done", flush=True)
 
     if cascade_cap:
-        casc, n_esc, think_ms, think_tok = list(raw), 0, [], []
+        # raw 확신도가 낮은 것부터 최대 cascade_cap건을 thinking 재판단. 나머지는 raw 그대로.
+        casc, cc_cost, n_esc = list(raw), list(raw_cost), 0
         low = sorted([i for i, p in enumerate(raw) if max(p) < CASCADE_TAU], key=lambda i: max(raw[i]))
         for i in low[:cascade_cap]:
-            p, ms, tok = think_then_decide(api, test[i]["state"], spec, budget=768)
+            p, c = think_then_decide(caller, test[i]["state"], spec, budget=cascade_budget)
             casc[i] = p
+            cc_cost[i] = add_costs(raw_cost[i], c)
             n_esc += 1
-            think_ms.append(ms)
-            think_tok.append(tok)
-        res["cascade"] = casc
-        calls["cascade"] = 1 + n_esc / len(test)
-        extra.update({"cascade_low_conf": len(low), "cascade_escalated": n_esc,
-                      "cascade_think_ms_mean": sum(think_ms) / len(think_ms) if think_ms else 0,
-                      "cascade_think_tokens_mean": sum(think_tok) / len(think_tok) if think_tok else 0})
+        res["cascade"], cost["cascade"], calls["cascade"] = casc, cc_cost, 1 + n_esc / n
+        extra.update({"cascade_low_conf": len(low), "cascade_escalated": n_esc, "cascade_budget": cascade_budget})
         print(f"  cascade done ({n_esc}/{len(low)} low-conf escalated)", flush=True)
 
-    table = {m: {**metrics(p, gold, names, spec["kind"]), "calls_per_item": calls[m]} for m, p in res.items()}
-    return {"task": task, "metrics": table, "extra": extra}
+    table = {m: {**metrics(p, gold, names, spec["kind"]), **cost_summary(cost[m]), "calls_per_item": calls[m]}
+             for m, p in res.items()}
+
+    # plain+thinking(평소 방식)은 느려서 앞쪽 N건 표본만. 같은 표본에서 다른 기법과 비교한다.
+    subset = None
+    if plain_think_n:
+        idx = list(range(min(plain_think_n, n)))
+        preds, pc, fails = [], [], 0
+        for i in idx:
+            p, c = plain_pred(caller, test[i]["state"], spec, names, thinking=True)
+            pc.append(c)
+            if p is None:
+                fails += 1
+                p = [1 / len(names)] * len(names)
+            preds.append(p)
+        g = [gold[i] for i in idx]
+        subset = {"n": len(idx), "plain_think_parse_fail": fails, "methods": {}}
+        subset["methods"]["plain+thinking"] = {**metrics(preds, g, names, spec["kind"]), **cost_summary(pc)}
+        for m in ("raw", "fewshot+devcal", "plain", "cascade"):
+            if m in res:
+                subset["methods"][m] = {**metrics([res[m][i] for i in idx], g, names, spec["kind"]),
+                                        **cost_summary([cost[m][i] for i in idx])}
+        print(f"  plain+thinking done (n={len(idx)})", flush=True)
+
+    return {"task": task, "metrics": table, "subset": subset, "extra": extra}
 
 
 def print_table(r: dict):
     t = r["metrics"]
-    has_yes = "yes_rate" in next(iter(t.values()))
-    print(f"\n{r['task']}: n={next(iter(t.values()))['n']}  (1 call p50 {r['extra']['call_ms_p50']:.0f}ms)")
-    head = f"  {'method':9} {'acc':>6} {'95%CI':>13} {'F1':>5} {'Brier':>6} {'ECE':>5} {'AUROC':>6} {'AURC':>5} {'top50':>6}"
-    print(head + (f" {'yes%':>5}" if has_yes else "") + f" {'calls':>5}")
+    raw = t["raw"]
+    has_yes = "yes_rate" in raw
+    print(f"\n{r['task']}: n={raw['n']}   (cost = mean per item; x = multiple of raw)")
+    head = (f"  {'method':15} {'acc':>6} {'95%CI':>11} {'ECE':>5} {'AUROC':>6} {'AURC':>5}"
+            + (f" {'yes%':>5}" if has_yes else "")
+            + f" {'calls':>5} {'in_tok':>7} {'out_tok':>7} {'p50ms':>7} {'p95ms':>7} {'tok_x':>6} {'ms_x':>6}")
+    print(head)
     for m, v in t.items():
         au = f"{v['auroc']:.3f}" if v["auroc"] is not None else "  -  "
-        line = (f"  {m:9} {v['acc']:6.3f} [{v['acc_ci95'][0]:.2f},{v['acc_ci95'][1]:.2f}] {v['macro_f1']:5.3f} "
-                f"{v['brier']:6.3f} {v['ece']:5.3f} {au:>6} {v['aurc']:5.3f} {v['acc_top50conf']:6.3f}")
-        if has_yes:
-            line += f" {v['yes_rate']:5.2f}"
-        print(line + f" {v['calls_per_item']:5.2f}")
+        tok_x = (v["in_tok"] + v["out_tok"]) / (raw["in_tok"] + raw["out_tok"])
+        ms_x = v["ms_mean"] / raw["ms_mean"]
+        line = (f"  {m:15} {v['acc']:6.3f} [{v['acc_ci95'][0]:.2f},{v['acc_ci95'][1]:.2f}] {v['ece']:5.3f} "
+                f"{au:>6} {v['aurc']:5.3f}" + (f" {v['yes_rate']:5.2f}" if has_yes else "")
+                + f" {v['calls_per_item']:5.2f} {v['in_tok']:7.0f} {v['out_tok']:7.1f} {v['ms_p50']:7.0f}"
+                f" {v['ms_p95']:7.0f} {tok_x:6.1f} {ms_x:6.1f}")
+        print(line)
+    su = r["extra"]["setup_costs"]
+    print("  one-time setup: " + ", ".join(
+        f"{k}: {v['calls']} calls" + (f" / {v['labels']} labels" if "labels" in v else "") for k, v in su.items()))
+    if r.get("subset"):
+        s = r["subset"]
+        print(f"  --- sample of {s['n']} items (incl. plain+thinking) ---")
+        for m, v in s["methods"].items():
+            print(f"  {m:15} acc {v['acc']:.3f}  in {v['in_tok']:6.0f}  out {v['out_tok']:7.1f}  "
+                  f"p50 {v['ms_p50']:7.0f}ms  mean {v['ms_mean']:7.0f}ms")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", default="bgl,boolq,agnews")
     ap.add_argument("--plain", action="store_true")
-    ap.add_argument("--cascade", type=int, default=0, help="태스크당 think-then-decide 최대 건수")
+    ap.add_argument("--cascade", type=int, default=0, help="max think-then-decide items per task")
+    ap.add_argument("--cascade-budget", type=int, default=768, help="thinking token budget for cascade")
+    ap.add_argument("--plain-thinking", type=int, default=0, help="plain+thinking sample size per task")
     args = ap.parse_args()
     api = SystemOneAPI()
     caller = Caller(api)
     print(f"endpoint={api.base_url} model={api.model} mode={api.mode}")
-    results = [run_task(t, api, caller, args.plain, args.cascade) for t in args.tasks.split(",")]
+    results = [run_task(t, caller, args.plain, args.cascade, args.cascade_budget, args.plain_thinking)
+               for t in args.tasks.split(",")]
     for r in results:
         print_table(r)
     path = os.path.join(OUT, f"improve_{time.strftime('%Y%m%d_%H%M%S')}.json")
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"model": api.model, "results": results}, f, ensure_ascii=False, indent=1)
+        json.dump({"model": api.model, "args": vars(args), "results": results}, f, ensure_ascii=False, indent=1)
     print(f"\nsaved: {path}")
 
 
