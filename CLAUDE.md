@@ -5,6 +5,7 @@ MCP 서버로 Claude Code / opencode에 노출하는 프로젝트.
 
 **작업 전에 `docs/HANDOFF.md`를 먼저 읽어라.** 설계 이유, 실패와 해결 기록, 벤치마크, 사내 적용 절차와 TODO가 있다.
 성능 개선 기법과 벤치마크 설계는 `docs/IMPROVE_AND_BENCHMARK.md`에 있다.
+**어떤 문제에 어떤 기법을 쓸지는 `docs/TECHNIQUE_GUIDE.md`**를 따른다 (질문 설계 시 먼저 확인).
 
 ## 규칙
 - 이 저장소는 **public**이다. 사내 엔드포인트 주소, API 키, 실제 로그, 사내 데이터, 사내 모델 결과 파일을 커밋하지 마라.

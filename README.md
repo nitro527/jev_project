@@ -19,6 +19,7 @@ MCP 서버로 감싸 Claude Code / opencode에서 도구로 호출하기 위한 
 | `mcp_smoke_test.py` | MCP 서버를 stdio로 띄워 핸드셰이크/호출 검증 | 표준 라이브러리 |
 | `bench/bench_compare.py` | jev vs 일반 생성 60건 정량 비교 (기준 결과: `bench/results_qwen3.5-4b_local.json`) | 표준 라이브러리 |
 | `bench/improve_eval.py`, `bench/datasets.py` | 개선 기법(few-shot, 보정, 순서 섞기, cascade) 비교 — 공개 실제 라벨 데이터(BGL 로그, BoolQ, AG News) | 표준 라이브러리 (데이터 받을 때만 pandas) |
+| `docs/TECHNIQUE_GUIDE.md` | **문제 유형별 기법 선택 가이드** (쉬운 설명) | – |
 | `docs/IMPROVE_AND_BENCHMARK.md` | 개선 기법 조사·실험 결과·벤치마크 설계 | – |
 | `docs/HANDOFF.md` | **인수인계 문서** — 설계 이유, 실패/해결 기록, 벤치마크, 사내 적용 절차, TODO | – |
 | `jev_local.py` | (집 PC) transformers로 전체 logits를 직접 읽는 기준 구현 | torch, transformers |
