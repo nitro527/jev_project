@@ -9,23 +9,34 @@ MCP 서버로 감싸 Claude Code / opencode에서 도구로 호출하기 위한 
 > ⚠️ 이 저장소는 public이다. 사내 엔드포인트 주소, API 키, 실제 로그는 절대 커밋하지 말 것.
 > 실제 설정은 `.mcp.json` / `opencode.json`(gitignore됨)이나 환경변수에만 둔다.
 
+## 문서 (읽는 순서)
+
+| 문서 | 내용 |
+|---|---|
+| `docs/HANDOFF.md` | **인수인계**: 배경, 설계, 고민·실패·해결 기록, 사내 적용 절차(분기표), TODO |
+| `docs/CONCEPTS.md` | **개념 정리** (쉬운 설명): raw와 plain의 차이, 출력 1토큰과 logprobs의 역할, "확률로 답해"가 안 되는 이유, 입력/출력 시간, thinking, 보정, cascade, 진짜 Jev와의 차이 |
+| `docs/TECHNIQUE_GUIDE.md` | **문제 유형별 기법 선택 가이드** |
+| `docs/IMPROVE_AND_BENCHMARK.md` | 개선 기법 조사·실험 결과(비용 포함)·벤치마크 설계·재현 방법 |
+
 ## 파일
 
 | 파일 | 용도 | 의존성 |
 |---|---|---|
 | `jev_api.py` | 핵심 엔진 `SystemOneAPI` + 질문 빌더 `noul/choice/score` | 표준 라이브러리 |
-| `jev_mcp_server.py` | MCP stdio 서버 (`jev_decide`, `jev_decide_batch`) | 표준 라이브러리 |
+| `jev_mcp_server.py` | MCP stdio 서버 (`jev_decide`, `jev_decide_batch`, `jev_compare`, `llm_chat`) | 표준 라이브러리 |
 | `probe_endpoint.py` | 사내 엔드포인트가 이 방식을 지원하는지 점검 | 표준 라이브러리 |
 | `mcp_smoke_test.py` | MCP 서버를 stdio로 띄워 핸드셰이크/호출 검증 | 표준 라이브러리 |
 | `bench/bench_compare.py` | jev vs 일반 생성 60건 정량 비교 (기준 결과: `bench/results_qwen3.5-4b_local.json`) | 표준 라이브러리 |
-| `bench/improve_eval.py`, `bench/datasets.py` | 개선 기법(few-shot, 보정, 순서 섞기, cascade) 비교 — 공개 실제 라벨 데이터(BGL 로그, BoolQ, AG News) | 표준 라이브러리 (데이터 받을 때만 pandas) |
-| `docs/TECHNIQUE_GUIDE.md` | **문제 유형별 기법 선택 가이드** (쉬운 설명) | – |
-| `docs/IMPROVE_AND_BENCHMARK.md` | 개선 기법 조사·실험 결과·벤치마크 설계 | – |
-| `docs/HANDOFF.md` | **인수인계 문서** — 설계 이유, 실패/해결 기록, 벤치마크, 사내 적용 절차, TODO | – |
+| `bench/improve_eval.py`, `bench/datasets.py` | 개선 기법(few-shot, 보정, 순서 섞기, cascade, plain+thinking) 비교 — 공개 실제 라벨 데이터(BGL 로그, BoolQ, AG News). 정확도·보정·판별력·**토큰·지연** | 표준 라이브러리 (데이터 받을 때만 pandas) |
+| `bench/verbal_vs_logprob.py` | "확률로 답해"(말로 한 확률) vs logprobs | 표준 라이브러리 |
+| `bench/latency_profile.py` | 입력/출력 시간 분리 + prefix cache 확인 | 표준 라이브러리 |
+| `bench/think_budget.py` | thinking 예산별 판단 변화 | 표준 라이브러리 |
+| `bench/patterns_demo.py` | 추출·재정렬·계층 분류 데모 | 표준 라이브러리 |
 | `jev_local.py` | (집 PC) transformers로 전체 logits를 직접 읽는 기준 구현 | torch, transformers |
 | `mock_vllm_server.py` | (집 PC) 로컬 모델로 vLLM 응답 형식을 흉내 내는 테스트 서버 | torch, transformers |
 
-회사에서는 위 4개 표준 라이브러리 파일만 있으면 된다 (Python 3.10+).
+회사에서는 `jev_api.py`, `jev_mcp_server.py`, `probe_endpoint.py`, `mcp_smoke_test.py`와 `bench/`만 있으면 된다
+(Python 3.10+, 표준 라이브러리만).
 
 ## 회사에서 할 일
 
@@ -114,6 +125,11 @@ claude mcp add jev -e JEV_BASE_URL=http://<게이트웨이>/v1 -e JEV_MODEL=<모
   → 실제 데이터 수십 건으로 기준값(예: 0.9)과 `JEV_TEMPERATURE`를 정할 것.
 - 경계 사례(재전송 몇 번, BLER 8% 등)는 선택지 설명에 판단 기준을 적어야 정확해진다
   (예: "BLER < 10%이고 재시도 후 성공하면 normal").
+- **실제 로그(BGL) 판정에서는 예시 + 소량 라벨 보정이 가장 효과가 컸다**: 0.675 → 0.925(라벨 20건, 시간은 1.1배).
+  일반 분류는 raw로 충분하다.
+- **logprobs가 사실상 필수다.** "확률을 숫자로 답해"라고 시키면 거의 0/100만 나오고 오답에도 100%를 붙였다.
+- **시간은 출력 토큰이 좌우한다**(출력 1토큰 ≈ 입력 100~160토큰). plain은 8~18배, thinking은 1000배 이상 느렸고,
+  plain+thinking은 예산 4096토큰을 넘겨 답이 없는 경우가 절반이었다.
 
 ## 로컬 개발 환경 (집 PC)
 

@@ -7,6 +7,15 @@
 > 7장 "사내 적용 절차"부터 순서대로 진행하고, 판단이 필요하면 4장(고민/실패/해결)과 6장(알려진 한계)을 참고해라.
 > 이 저장소는 **public**이다. 사내 엔드포인트 주소, 키, 실제 로그, 사내 데이터를 절대 커밋하지 마라.
 
+### 문서 지도 (읽는 순서)
+| 순서 | 문서 | 내용 |
+|---|---|---|
+| 1 | `CLAUDE.md` | 규칙과 진입점 |
+| 2 | **이 문서 (`docs/HANDOFF.md`)** | 배경, 설계, 고민·실패·해결 기록, 사내 적용 절차, TODO |
+| 3 | `docs/CONCEPTS.md` | **개념 정리**: raw와 plain의 차이, 출력 1토큰과 logprobs의 역할, 말로 한 확률이 안 되는 이유, 입력/출력 시간, thinking, 보정, cascade, 진짜 Jev와의 차이 |
+| 4 | `docs/TECHNIQUE_GUIDE.md` | **문제 유형별 기법 선택** (질문을 설계할 때 먼저 볼 것) |
+| 5 | `docs/IMPROVE_AND_BENCHMARK.md` | 개선 기법 실험, 비용 포함 결과, 벤치마크 설계, 재현 방법 |
+
 ---
 
 ## 목차
@@ -41,9 +50,15 @@
   - OpenAI 최신 계열: json_schema와 함께 쓰면 비어 있거나 top_logprobs가 에러를 낸다는 보고가 있다.
 - 반면 vLLM/SGLang/llama.cpp로 **자체 서빙하는 오픈 모델은 logprobs를 준다.**
   사내 Qwen3.8(vLLM류 추정)이 바로 이 경우다.
-- 참고한 오픈소스 대안: `open-alternative-jev`(Qwen3.6-27B로 검증, HF/vLLM), `OpenJev`(Qwen3.5-4B),
-  `openjev`(DiffusionGemma, Jev API 호환). 이 프로젝트는 이들과 같은 원리를
-  **OpenAI 호환 API의 logprobs만으로** 구현한다. 사내에서는 모델 가중치를 직접 불러올 수 없기 때문이다.
+- 참고한 오픈소스 대안 (이름이 비슷하니 주의):
+  - `open-alternative-jev` (so1): 오픈 LLM의 다음 토큰 분포를 선택지로 제한. Qwen3.6-27B로 검증, HF/vLLM.
+  - `TheoLeeCJ/openjev`: **Qwen3.5-4B를 학습 없이 그대로** 쓰고, 한 번 통과시켜 선택지 logit을 읽는다(우리와 같은 원리).
+    추가로 **shared mode**가 있다. 긴 state의 KV 캐시를 한 번 만들고 여러 질문으로 가지를 친다(판단 777개가 38.8초, 새로 계산하면 333초).
+  - `razorback16/openjev`: DiffusionGemma 기반. Jev API 형식과 호환된다.
+  - 이 프로젝트는 같은 원리를 **OpenAI 호환 API의 logprobs만으로** 구현한다. 사내에서는 모델 가중치를 직접 불러올 수 없기 때문이다.
+- 진짜 Jev(TypeSafe)는 **가중치도 구조 논문도 없는 비공개 API**다. 공식적으로 밝힌 건 두 가지뿐이다.
+  (1) 토큰을 하나씩 생성하지 않고 모든 확률을 병렬로 낸다. (2) **RLCD**(정답과 비교해 "70% 확신이면 실제로 70% 맞도록" 보상)로 학습했다.
+  우리 구현의 "예시 + 소량 라벨 보정"은 RLCD의 저렴한 사후 대용품이다. 자세한 비교는 `docs/CONCEPTS.md` 10장.
 
 ### 1.3 최종 목표
 ```
@@ -112,7 +127,13 @@ completions 모드에서는 ChatML을 직접 만들고 assistant 시작부에 `<
 | `probe_endpoint.py` | 엔드포인트가 이 방식을 지원하는지 7단계로 점검 | 표준 라이브러리 | ✅ |
 | `mcp_smoke_test.py` | MCP 서버를 stdio로 띄워 핸드셰이크와 전 도구 호출 검증 | 표준 라이브러리 | ✅ |
 | `bench/bench_compare.py` | jev vs 일반 생성 60건 정량 비교 | 표준 라이브러리 | ✅ |
-| `bench/results_qwen3.5-4b_local.json` | 집 PC 기준 결과(비교 기준선) | – | 참고 |
+| `bench/improve_eval.py`, `bench/datasets.py` | 개선 기법 비교(공개 실제 라벨 데이터: BGL 로그, BoolQ, AG News). 정확도·보정·판별력·**토큰·지연** | 표준 라이브러리 (데이터 첫 다운로드만 pandas) | ✅ |
+| `bench/verbal_vs_logprob.py` | 말로 한 확률 vs logprobs 비교 | 표준 라이브러리 | ✅ |
+| `bench/latency_profile.py` | 입력/출력 시간 분리 측정 + **prefix cache 확인** | 표준 라이브러리 | ✅ |
+| `bench/think_budget.py` | 사고 예산(thinking 토큰 수)별 판단 변화 | 표준 라이브러리 | ✅ |
+| `bench/patterns_demo.py` | 추출·재정렬·계층 분류 데모 | 표준 라이브러리 | ✅ |
+| `bench/results_*.json` | 집 PC 기준 결과(비교 기준선) | – | 참고 |
+| `docs/*.md` | 인수인계, 개념, 기법 가이드, 벤치마크 문서 | – | ✅ |
 | `jev_local.py` | transformers로 전체 logits를 직접 읽는 기준 구현 | torch, transformers | ❌ |
 | `mock_vllm_server.py` | 로컬 모델로 vLLM 응답 형식을 흉내 내는 테스트 서버 | torch, transformers | ❌ |
 | `.mcp.json.example`, `opencode.json.example` | 에이전트 등록 예시 | – | ✅ |
@@ -254,6 +275,47 @@ completions 모드에서는 ChatML을 직접 만들고 assistant 시작부에 `<
   - 벤치마크에서는 "키가 어긋나도 값이 하나면 그 값을 쓰는" **관대한 채점(lenient)**을 따로 집계했다.
   - `jev_api.py` 본체는 **아직 고치지 않았다** (6장 TODO #1).
 
+### 4.12 "thinking을 끄면 단순한 답만 가능한가?" — 할 수 있는 것과 없는 것
+- 사용자 질문에서 출발해 조사(Jev 커뮤니티 사례 31종, TypeSafe 문서)와 실험을 했다.
+- **thinking을 꺼도 단순한 답만 가능한 건 아니다.** 추출(후보 줄을 선택지로), 재정렬(P(yes)로 정렬), 계층 분류가 동작했다
+  (`bench/patterns_demo.py`). Jev 공식 문서도 산술, 날짜, 개수 세기, 열린 질문은 못 한다고 밝힌다.
+- 사고 예산 실험(`bench/think_budget.py`): 계산 문제 10개에서 thinking 끔 7/10, 256토큰 8/10, 1024토큰 10/10.
+  **생각을 끝까지 마쳐야** 효과가 있었고, 마친 뒤에는 확률이 0/1로 쏠렸다.
+- 다른 세션에서 Jev 팀의 workflow eval 방식(보안, 에이전트 트레이스, 인보이스, CS 라우팅)을 함정이 있는 72문항으로 재현했다.
+  jev 78%, plain 86%. 확신도 0.8 이상만 채택하면 92%(39건). (보안 인시던트 케이스를 만들다가 한 번 사용 정책 필터에 걸려 중단된 적이 있다.)
+
+### 4.13 공개 실제 데이터로 개선 기법 벤치마크 (`bench/improve_eval.py`)
+| 고민/실패 | 해결 |
+|---|---|
+| 가짜 모뎀 로그로 하는 테스트는 의미가 없다(사용자 판단) | **공개된 실제 라벨 데이터**를 쓴다. 로그 도메인은 Loghub **BGL**(슈퍼컴퓨터 실제 로그, 관리자 알림 라벨) |
+| BGL을 "숫자만 다른 같은 형식"끼리 합치자 장애 줄이 18개밖에 안 남았다 | **완전히 같은 줄만** 합치도록 바꿨다 → 장애 50개 |
+| 무작위로 뽑은 정상 줄은 대부분 INFO라 너무 쉽다 | 알림은 전부 FATAL인데 **FATAL 347줄 중 204줄이 정상**이라는 점을 이용해, 정상 표본의 절반을 **FATAL 정상 줄**(함정)로 채웠다 |
+| few-shot만 넣었더니 거의 전부 "예"(99%)로 쏠려 정확도가 떨어졌다. 그런데 AUROC가 0.944였다 | "순서는 맞고 기준선만 틀렸다"고 해석하고 **few-shot 위에 보정을 얹는 조합**(fewshot+bc, fewshot+devcal)을 추가했다 → **0.925** |
+| dev에서 뽑은 예시로 dev를 보정하면 누수 | fewshot+devcal의 보정은 **예시로 쓴 항목을 뺀 dev**로 학습한다 |
+| **사용자 지적: "벤치마크에 속도와 토큰이 없으면 의미가 있나?"** 호출 수만 있었다 | 모든 기법에 **항목당 입력/출력 토큰, 지연 p50/p95, raw 대비 배수, 1회성 준비 비용(라벨 수)**을 기록하도록 고쳤다. plain+thinking 표본도 추가했다 |
+| 비싼 호출(plain, thinking)을 재실행할 때마다 다시 부름 | `Caller.memo`로 결과를 `bench/out/cache.jsonl`에 캐시한다 |
+| bash heredoc 안의 따옴표 때문에 파일 치환 명령이 통째로 실패했다("unexpected EOF") | 새 코드를 별도 파일로 쓴 뒤 `head` + `cat`으로 이어 붙였다 |
+| plain+thinking(예산 4096)이 15건 중 8건에서 생각을 끝내지 못해 답이 없었다 | 결과에 그대로 기록했다. **운영에서 thinking을 쓰면 예산 초과 처리가 필수**라는 근거가 됐다 |
+
+결과 요약(자세한 표는 `docs/IMPROVE_AND_BENCHMARK.md`):
+- **도메인 로그(BGL)**: raw 0.675 → **fewshot+devcal 0.925**(라벨 20건, 시간은 raw의 1.1배). plain 0.75(8배 느림).
+- **일반 독해·뉴스 분류**: raw가 이미 0.85~0.88이다. 기법 차이는 신뢰구간 안이고 few-shot은 오히려 떨어졌다.
+- perm(순서 섞기)과 cc(빈 입력 보정)는 효과가 없었다. cascade(보정 안 한 raw 위)는 +0.01~0.03.
+
+### 4.14 개념 검증: 사용자가 헷갈린 지점을 실험으로 확인
+설명을 반복하는 대신 **직접 재서** 확인했고, 결과를 `docs/CONCEPTS.md`로 정리했다.
+| 질문 | 확인 방법 | 결론 |
+|---|---|---|
+| raw와 plain은 실제로 무엇이 다른가? | 실제로 보낸 프롬프트와 요청을 코드에서 출력 | 같은 모델, 같은 계산. 다른 건 ① 프롬프트 형식 ② `max_tokens=1`+logprobs vs 생성 ③ **확률표를 읽느냐 쓴 글을 파싱하느냐** |
+| 출력 토큰이 시간을 좌우한다는 게 맞나? ("출력 이전 동작이 같다는 전제가 필요하지 않나") | `bench/latency_profile.py`로 입력/출력을 분리 측정 | 출력 1토큰 약 46~50ms, 입력 1토큰 약 0.3~0.5ms(100~160배). plain의 지연(878ms)이 공식(100+16×50)과 맞는다. **우리 구현에서는 전제가 성립**한다(차이는 모델 통과 횟수뿐) |
+| 그냥 "확률로 답해"라고 하면 안 되나? | `bench/verbal_vs_logprob.py` | 말로 한 확률은 거의 0/100뿐이고 **오답에도 전부 100%**. 형식은 강제돼도 정직성은 강제되지 않는다 |
+| logprobs가 꼭 필요한가? | 위 결과 + BGL 결과 | 1토큰 **답**은 logprobs 없이도 된다. **확률**이 없으면 보정·gate·cascade가 불가능해 BGL 0.925 → 0.537 |
+| Jev는 "출력 1토큰 강제"가 전부인가? | TheoLeeCJ/openjev README, TypeSafe 공개 자료 확인 | 우리 구현과 OpenJev는 그게 전부다. 진짜 Jev는 비공개이며 RLCD 학습과 병렬 출력을 주장한다 |
+| cascade는 보정인가? 2단계는 plain인가? | 코드 확인 | 보정이 아니라 **넘기는 구조**. 이 프로젝트의 2단계는 thinking + Jev 읽기(plain 아님) |
+| plain+thinking이 상한선이면 Jev는 필요 없나? | 비용 포함 벤치마크 | "상한선"이라는 표현은 부정확했다(정정). BGL에서는 예시+보정 Jev가 더 높았다. Jev의 가치는 **양·속도·확신도**이며 thinking을 대체하지 않고 **어디에 쓸지 골라준다** |
+
+교훈(설명 방식): 이 사용자에게는 **전문 용어보다 비유와 실제 프롬프트, 실측 숫자**가 통했다. 용어를 쓸 때는 반드시 한 줄 설명을 붙인다.
+
 ---
 
 ## 5. 검증 및 벤치마크 결과
@@ -309,7 +371,18 @@ completions 모드에서는 ChatML을 직접 만들고 assistant 시작부에 `<
 - 핸드셰이크 OK, 도구 4개 모두 확인했다. 단건 질문 3개가 0.6~0.9초, 배치 3건이 약 0.7초였다.
   비교 도구는 thinking off에서 3.0초, on에서 72초였다. 잘못된 입력은 `isError=true`로 돌아왔다.
 
-### 5.5 이 결과를 어디까지 믿을 수 있나
+### 5.5 개선 기법·비용·개념 실험 (요약, 자세한 내용은 별도 문서)
+| 실험 | 핵심 수치 | 문서 |
+|---|---|---|
+| 개선 기법 (BGL 로그) | raw 0.675 → **fewshot+devcal 0.925** (시간 1.1배, 라벨 20건) / plain 0.75 (8배) | IMPROVE 3.1, 3.5 |
+| 개선 기법 (BoolQ, AG News) | raw 0.85~0.88, 기법 차이는 신뢰구간 안 | IMPROVE 3.2, 3.3 |
+| 비용 | raw 출력 1토큰 약 0.1초 / plain 15~30토큰 8~18배 / thinking 수천 토큰 1000배 이상 | IMPROVE 3.5 |
+| plain+thinking 표본 | 15건 중 8건이 예산 4096토큰 초과로 답 없음. 답한 7건은 정답 | IMPROVE 3.5 |
+| 사고 예산 | 계산 문제: 끔 7/10 → 1024토큰 10/10 (29초) | IMPROVE 3.4 |
+| 말로 한 확률 | 값이 0/100뿐, 오답도 100% | IMPROVE 3.6, CONCEPTS 4 |
+| 입력 vs 출력 시간 | 출력 1토큰 ≈ 입력 100~160토큰 | IMPROVE 3.7, CONCEPTS 5 |
+
+### 5.6 이 결과를 어디까지 믿을 수 있나
 - 60건은 작은 표본이다. 60 대 57은 통계적으로 유의하다고 보기 어렵다.
 - 문항과 정답 라벨은 직접 만들었고 대체로 쉽다. **실제 도메인 데이터(모뎀 로그)로는 아직 측정하지 않았다.**
 - 4B 모델 하나로만 측정했다. Qwen3.8에서는 정확도, 확신도 분포, 치우침이 모두 다를 수 있다.
@@ -330,6 +403,12 @@ completions 모드에서는 ChatML을 직접 만들고 assistant 시작부에 `<
 | 8 | 게이트웨이 rate limit | 배치는 동시 요청 수가 `JEV_BATCH_WORKERS × 질문 수`까지 늘어난다 | 한도를 확인한 뒤 `JEV_BATCH_WORKERS`를 조정한다. 429 재시도는 **아직 구현하지 않았다** |
 | 9 | 긴 로그 | 로그 윈도가 길면 입력 토큰과 지연이 커진다 | 윈도 크기와 요약 전처리 전략이 필요하다 |
 | 10 | 재시도/타임아웃 | HTTP 실패 시 재시도가 없다 | 사내 환경에서 필요하면 추가한다 |
+| 11 | **예시·보정이 운영 코드에 없다** | 가장 효과가 컸던 few-shot + devcal은 벤치마크 스크립트에만 있다 | 질문 스펙에 `examples`와 `calibration`(T, bias), `jev_decide_batch`에 `batch_calibrate` 옵션을 추가한다(IMPROVE 5장 1~3) |
+| 12 | **cascade가 운영 코드에 없다** | think-then-decide는 벤치마크에만 있다 | `escalate_below` + `think_budget`을 추가하고 **보정된 확신도**를 기준으로 삼는다. 예산 초과 처리를 포함한다(IMPROVE 5장 4~5) |
+| 13 | prefix cache 미확인 | 질문마다 state를 다시 보낸다. 서버 prefix cache가 없으면 긴 로그에서 입력 비용이 질문 수만큼 는다 | `bench/latency_profile.py` [C]로 확인한다. 효과가 없으면 OpenJev의 shared mode처럼 질문을 같은 서버로 묶는 방식을 검토한다 |
+| 14 | logprobs 없는 게이트웨이 | 이 방식의 핵심이 사라진다 | 예비로 답만 받는 모드를 둘 수 있다(확률, 보정, cascade 불가). **말로 한 확률로 대체하지 않는다** |
+| 15 | 통제되지 않은 raw vs plain 비교 | 두 방식의 프롬프트가 조금 달라서 차이의 원인이 완전히 분리되지 않는다 | 같은 프롬프트로 확률 읽기 vs 생성을 비교한다 |
+| 16 | "보정 후 cascade" 미측정 | cascade는 보정 안 한 raw 위에서만 쟀다 | fewshot+devcal → 보정된 확신도로 cascade를 측정한다 |
 
 ---
 
@@ -361,7 +440,7 @@ python probe_endpoint.py
 |---|---|---|
 | 1 FAIL (모델 없음) | 모델 이름 불일치 | 출력된 served models 중 하나로 `JEV_MODEL`을 설정한다 |
 | 1 FAIL (연결/SSL) | 네트워크, 인증서, 프록시 문제 | `JEV_INSECURE=1`, `NO_PROXY`, URL 끝의 `/v1`을 확인한다 |
-| 2 FAIL "logprobs가 비어 있음" | **게이트웨이가 logprobs를 제거하거나 모델이 지원하지 않음** | 5번 결과를 본다. 둘 다 안 되면 **이 방식은 불가**하다. 게이트웨이 담당자에게 logprobs 통과를 요청해야 한다 |
+| 2 FAIL "logprobs가 비어 있음" | **게이트웨이가 logprobs를 제거하거나 모델이 지원하지 않음** | 5번 결과를 본다. 둘 다 안 되면 **이 방식은 불가**하다. 게이트웨이 담당자에게 logprobs 통과를 요청해야 한다. 임시로 답만 받는 모드는 가능하지만 확률·보정·cascade를 모두 잃는다. "확률을 숫자로 답해"로 대신하지 않는다(CONCEPTS 4장) |
 | 2 FAIL "라벨이 아님" | `chat_template_kwargs`가 무시되어 thinking이 켜진 상태 | 5번이 PASS면 `JEV_MODE=completions`로 설정한다 |
 | 3 "기본이 thinking ON" | 참고 정보 | 2번이 PASS면 괜찮다 |
 | 4 top_logprobs 한도 < 20 | 게이트웨이 제한 | `JEV_TOP_LOGPROBS=<한도>`로 설정하고, 선택지 수를 그보다 적게 설계한다 |
@@ -392,6 +471,15 @@ python bench/bench_compare.py --out bench_qwen38.json
 결과를 `bench/results_qwen3.5-4b_local.json`과 비교한다. 결과 파일에는 공개 데이터만 들어가지만,
 **사내 모델의 이름이나 주소가 들어갈 수 있으니 커밋하기 전에 확인해라.**
 
+개선 기법과 비용까지 포함한 표는 이렇게 만든다(공개 데이터를 받아야 하므로, 사내망에서 막히면 집에서 받은 `bench/data/*.jsonl`을 옮긴다).
+```bash
+python bench/latency_profile.py             # 입력/출력 비용 + prefix cache 확인 (가장 먼저, 1분)
+python bench/improve_eval.py --plain --cascade 10 --cascade-budget 2048 --plain-thinking 5
+python bench/verbal_vs_logprob.py           # 말로 한 확률 vs logprobs
+python bench/think_budget.py --budgets 512,2048
+```
+비교 기준: `bench/results_improve_cost_qwen3.5-4b_local.json`(집 PC). 비용은 **토큰 수**를 기준으로 비교한다(지연은 서버마다 크게 다르다).
+
 ### 7.7 실제 데이터로 보정 (핵심 다음 단계)
 1. 반복되는 판단 하나를 고른다 (예: 로그 윈도 failure_type).
 2. 선택지와 **판단 기준이 담긴 설명**을 고정한다. `other`나 `normal` 같은 탈출구를 반드시 넣는다.
@@ -400,6 +488,14 @@ python bench/bench_compare.py --out bench_qwen38.json
 5. 기준값을 정한다. 예: confidence 0.9 이상은 자동 처리, 0.1 이하는 무시, 중간은 사람이나 상위 모델로 보낸다.
    필요하면 `JEV_TEMPERATURE`를 조정한다.
 6. 같은 데이터로 `jev_compare`를 돌려 일반 생성과 비교한다 (6장 TODO #1을 먼저 고칠 것).
+
+**BGL에서 효과가 확인된 구성(예시 + 보정)을 실제 로그에 적용하는 방법**
+1. 장애 유형별 대표 예시 로그를 **클래스당 2개 이상** 고른다(dev에서만).
+2. 예시를 질문 앞에 넣고(`bench/improve_eval.py`의 `fewshot_state` 형식), 예시로 쓰지 않은 dev 20~50건의 확률을 모은다.
+3. `fit_devcal`로 temperature와 bias를 구한다. 이 값은 **그 질문 + 그 예시 조합에만** 유효하다. 질문이나 예시를 바꾸면 다시 구한다.
+4. test에서 정확도, AUROC, 비용을 확인한다(BGL 기준 0.675 → 0.925, 시간 1.1배).
+5. 보정된 확신도로 gate 기준값을 정한다. 낮은 것만 cascade/Claude/사람으로 넘긴다.
+6. 결과가 좋으면 TODO #11, #12(운영 코드 반영)를 진행한다.
 
 ---
 
@@ -410,13 +506,19 @@ python bench/bench_compare.py --out bench_qwen38.json
 > 일반 분류는 raw로 충분하다. 계산·추론은 코드나 thinking cascade로 처리한다.
 > 사내에서는 `python bench/improve_eval.py`로 같은 표를 다시 만든다.
 
-1. **7.3 probe를 실행하고** 결과를 사용자에게 분기표 기준으로 보고한다. logprobs가 불가능하면 즉시 멈추고 알린다.
+1. **7.3 probe를 실행하고** 결과를 사용자에게 분기표 기준으로 보고한다. **logprobs가 불가능하면 즉시 멈추고 알린다**(이 방식의 전제).
 2. probe 결과에 맞춰 `JEV_MODE`와 `JEV_TOP_LOGPROBS`를 정하고, `mcp_smoke_test.py`를 통과시킨다.
-3. Claude Code에 MCP를 등록한다. **사용자 설정 파일을 바꾸기 전에 확인을 받는다.**
-4. **TODO #1**: `parse_plain_answers`의 키 불일치 처리를 수정하고 `bench_compare.py`로 확인한다.
-5. `bench/bench_compare.py`로 사내 모델의 기준선을 측정하고 집 PC 결과와 비교해 보고한다.
-6. 사용자가 실제 모뎀 로그 라벨 데이터를 주면 7.7의 보정 절차를 수행한다.
-7. 필요에 따라 6장의 3, 5, 8, 10번(프롬프트 묶기, 위치 편향, rate limit, 재시도)을 개선한다.
+3. `bench/latency_profile.py`로 입력/출력 비용과 **prefix cache 동작 여부**를 확인해 보고한다(TODO #13).
+4. Claude Code에 MCP를 등록한다. **사용자 설정 파일을 바꾸기 전에 확인을 받는다.**
+5. `bench/improve_eval.py`(비용 포함)로 사내 모델 기준선을 만들고 집 PC 결과(`bench/results_improve_cost_qwen3.5-4b_local.json`)와
+   비교해 보고한다. 경향(도메인은 예시+보정, 일반은 raw, perm/cc 무효, thinking 초과)이 유지되는지가 핵심이다.
+6. 사용자가 실제 모뎀 로그 라벨 데이터를 주면 7.7의 **예시 + 보정** 절차를 수행한다. **가장 중요한 검증이다.**
+7. 효과가 확인되면 운영 코드에 반영한다: TODO #11(examples, calibration, batch_calibrate) → #12(escalate + think_budget).
+8. **TODO #1**: `parse_plain_answers`의 키 불일치 처리를 수정한다(`jev_compare`의 plain 쪽 채점이 불리해지는 문제).
+9. 필요에 따라 6장의 나머지(프롬프트 묶기, rate limit, 재시도, 통제 비교, 보정 후 cascade)를 진행한다.
+
+질문을 설계하거나 기법을 고를 때는 **`docs/TECHNIQUE_GUIDE.md`**를 따른다. 사용자에게 설명할 때는 `docs/CONCEPTS.md`의
+비유와 표를 활용한다(이 사용자는 용어보다 비유, 실제 프롬프트, 실측 숫자를 선호한다).
 
 코드 규칙:
 - 사내용 파일(`jev_api.py`, `jev_mcp_server.py`, `probe_endpoint.py`, `mcp_smoke_test.py`, `bench/`)은 **표준 라이브러리만** 쓴다.
@@ -471,3 +573,13 @@ python bench/bench_compare.py --out bench_qwen38.json
 - **confidence gate**: 확신도에 따라 자동 처리, 무시, 에스컬레이션으로 나누는 패턴.
 - **thinking**: Qwen 계열의 추론 모드. 켜져 있으면 첫 토큰이 `<think>`가 되어 이 방식이 동작하지 않는다.
 - **prefix cache**: 앞부분이 같은 프롬프트의 KV를 재사용하는 서버 기능. vLLM V1에서 기본으로 켜져 있다.
+- **prefill / decode**: 입력 전체를 한 번에 병렬로 처리하는 단계 / 출력을 한 토큰씩 순서대로 만드는 단계. 출력 1토큰 ≈ 입력 100~160토큰의 시간.
+- **raw / plain**: 1토큰 확률 읽기(기본 Jev 방식) / 모델이 JSON으로 답을 생성하는 평소 방식.
+- **few-shot**: 정답이 붙은 예시를 프롬프트에 넣는 것.
+- **devcal / bc / cc**: 보정 방법. 정답 20~50건으로 temperature와 bias 학습 / 판정 묶음의 평균으로 치우침 제거 / 빈 입력으로 치우침 측정.
+- **cascade**: 확신도가 낮은 건만 다음 단계로 넘기는 구조. 보정이 아니다.
+- **think-then-decide**: thinking으로 풀이를 쓴 뒤 풀이 끝 자리에서 라벨 확률을 읽는 방식. 이 프로젝트 cascade의 2단계.
+- **말로 한 확률(verbalized confidence)**: "확률을 숫자로 답해"로 받은 숫자. 자기 보고라서 믿을 수 없다.
+- **RLCD**: 진짜 Jev의 학습 방법. 정답과 비교해 확률이 실제 정답률과 맞도록 보상한다.
+- **shared mode**: OpenJev의 기능. 긴 state의 KV 캐시를 한 번 만들고 여러 질문으로 가지를 친다.
+- **AUROC / AURC / ECE / Brier**: 확신도로 정답과 오답을 가르는 능력 / 확신도 순으로 채택할 때의 위험 면적 / 확신도와 실제 정답률의 차이 / 확률 전체의 제곱오차.
