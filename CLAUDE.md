@@ -26,7 +26,7 @@ MCP 서버로 Claude Code / opencode에 노출하는 프로젝트.
 ```bash
 python probe_endpoint.py                     # 엔드포인트 점검 (JEV_BASE_URL, JEV_MODEL 필요)
 python mcp_smoke_test.py                     # MCP 서버 전 도구 검증
-python bench/latency_profile.py              # 입력/출력 비용 + prefix cache 확인
+python bench/latency_profile.py              # 고정 비용·TTFT·ITL·출력 비중 표·prefix cache·동시 처리량
 python bench/improve_eval.py --plain --cascade 10 --cascade-budget 2048 --plain-thinking 5   # 기법 비교(비용 포함)
 python bench/verbal_vs_logprob.py            # 말로 한 확률 vs logprobs
 python bench/think_budget.py --budgets 512,2048   # 사고 예산 실험

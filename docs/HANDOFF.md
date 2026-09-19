@@ -224,6 +224,8 @@ completions 모드에서는 ChatML을 직접 만들고 assistant 시작부에 `<
   - `/v1/chat/completions`: `logprobs.content[0].top_logprobs[{token, logprob, bytes}]`, `chat_template_kwargs` 지원
   - `/v1/completions`: `logprobs.top_logprobs[0]`가 `{token: logprob}` 형태
   - `top_logprobs > 20`이면 400을 돌려준다
+  - (후에 추가) chat `stream: true`(토큰마다 SSE 한 조각, KV 캐시로 토큰을 하나씩 직접 생성)와 vLLM 확장 `min_tokens` / `ignore_eos`(출력 길이 고정).
+    요청은 락으로 하나씩 처리한다(배칭 없음). 그래서 동시 처리량은 집에서 판단할 수 없다
 - 결과:
   - **chat 모드, completions 모드, 로컬 직접 계산이 소수점 4자리까지 같았다** (urgent 0.9841, intent 0.7058).
   - probe 7단계가 모두 통과했다.
@@ -312,6 +314,7 @@ completions 모드에서는 ChatML을 직접 만들고 assistant 시작부에 `<
 | logprobs가 꼭 필요한가? | 위 결과 + BGL 결과 | 1토큰 **답**은 logprobs 없이도 된다. **확률**이 없으면 보정·gate·cascade가 불가능해 BGL 0.925 → 0.537 |
 | Jev는 "출력 1토큰 강제"가 전부인가? | TheoLeeCJ/openjev README, TypeSafe 공개 자료 확인 | 우리 구현과 OpenJev는 그게 전부다. 진짜 Jev는 비공개이며 RLCD 학습과 병렬 출력을 주장한다 |
 | cascade는 보정인가? 2단계는 plain인가? | 코드 확인 | 보정이 아니라 **넘기는 구조**. 이 프로젝트의 2단계는 thinking + Jev 읽기(plain 아님) |
+| 추론 시간과 출력 시간을 따로 잴 수 있나? 인프라가 좋으면 출력이 빨라져 차이가 의미 없지 않나? | 가짜 서버에 스트리밍을 추가하고 `latency_profile.py` [D][E]로 첫 토큰까지(TTFT)와 토큰 간격(ITL)을 직접 분리 | 짧은 입력에서 "첫 토큰"과 "다음 토큰 하나"의 비용이 비슷하다(둘 다 모델 1회 통과). plain(20토큰)은 전체의 **67~92%가 출력**이다. 인프라가 좋아지면 **절대 차이는 줄지만(899ms → 가정 190ms) 출력 비중은 거의 그대로**다. 사내 실측 필요 |
 | plain+thinking이 상한선이면 Jev는 필요 없나? | 비용 포함 벤치마크 | "상한선"이라는 표현은 부정확했다(정정). BGL에서는 예시+보정 Jev가 더 높았다. Jev의 가치는 **양·속도·확신도**이며 thinking을 대체하지 않고 **어디에 쓸지 골라준다** |
 
 교훈(설명 방식): 이 사용자에게는 **전문 용어보다 비유와 실제 프롬프트, 실측 숫자**가 통했다. 용어를 쓸 때는 반드시 한 줄 설명을 붙인다.
@@ -381,6 +384,7 @@ completions 모드에서는 ChatML을 직접 만들고 assistant 시작부에 `<
 | 사고 예산 | 계산 문제: 끔 7/10 → 1024토큰 10/10 (29초) | IMPROVE 3.4 |
 | 말로 한 확률 | 값이 0/100뿐, 오답도 100% | IMPROVE 3.6, CONCEPTS 4 |
 | 입력 vs 출력 시간 | 출력 1토큰 ≈ 입력 100~160토큰 | IMPROVE 3.7, CONCEPTS 5 |
+| 출력 비중 (스트리밍 분리) | plain(20토큰) 전체의 67~92%가 출력, thinking 99.7%+. Jev 대비 짧은 입력 12.8배 / 긴 입력 3.0배 | IMPROVE 3.7, CONCEPTS 5 |
 
 ### 5.6 이 결과를 어디까지 믿을 수 있나
 - 60건은 작은 표본이다. 60 대 57은 통계적으로 유의하다고 보기 어렵다.
@@ -472,8 +476,18 @@ python bench/bench_compare.py --out bench_qwen38.json
 **사내 모델의 이름이나 주소가 들어갈 수 있으니 커밋하기 전에 확인해라.**
 
 개선 기법과 비용까지 포함한 표는 이렇게 만든다(공개 데이터를 받아야 하므로, 사내망에서 막히면 집에서 받은 `bench/data/*.jsonl`을 옮긴다).
+`latency_profile.py`에서 볼 것 (집 PC 기준선: `bench/results_latency_qwen3.5-4b_local.json`)
+| 출력 항목 | 무엇을 보나 | 판단 |
+|---|---|---|
+| [D] `GET /models` 왕복 | 네트워크·게이트웨이 고정 비용 | 크면(수십~수백 ms) 판단 1회가 이 값에 묶인다. 게이트웨이 경유 비용을 보고한다 |
+| [E] TTFT / ITL | 첫 토큰까지 / 출력 1토큰 시간 | 사내 **절대 시간**의 근거 |
+| [요약] 출력 비중 표 | plain·thinking 전체 시간 중 출력의 몫, Jev 대비 배수, plain과의 절대 차이 | **"속도 이점이 사내 환경에서 의미 있는가"**의 답. 절대 차이가 작으면 속도보다 확률(보정·gate)이 주된 가치다 |
+| [C] prefix cache | 두 번째 이후 / 첫 번째 비율 | 0.6 미만이면 동작 중. 아니면 TODO #13 |
+| [F] 동시 처리량 | 동시성을 올릴 때 건/초가 늘어나는지 (Jev형 vs 생성형) | vLLM 배칭 효과. 대량 처리 설계(`JEV_BATCH_WORKERS`)의 근거 |
+| "min_tokens/ignore_eos를 거부" 메시지 | 게이트웨이가 vLLM 확장 옵션을 막는지 | 막히면 출력 길이가 모델 마음대로라 [A][E][F]의 출력 수를 확인하고 해석한다 |
+
 ```bash
-python bench/latency_profile.py             # 입력/출력 비용 + prefix cache 확인 (가장 먼저, 1분)
+python bench/latency_profile.py             # 고정 비용·TTFT·ITL·출력 비중·prefix cache·동시 처리량 (가장 먼저, 약 2분)
 python bench/improve_eval.py --plain --cascade 10 --cascade-budget 2048 --plain-thinking 5
 python bench/verbal_vs_logprob.py           # 말로 한 확률 vs logprobs
 python bench/think_budget.py --budgets 512,2048
@@ -508,7 +522,8 @@ python bench/think_budget.py --budgets 512,2048
 
 1. **7.3 probe를 실행하고** 결과를 사용자에게 분기표 기준으로 보고한다. **logprobs가 불가능하면 즉시 멈추고 알린다**(이 방식의 전제).
 2. probe 결과에 맞춰 `JEV_MODE`와 `JEV_TOP_LOGPROBS`를 정하고, `mcp_smoke_test.py`를 통과시킨다.
-3. `bench/latency_profile.py`로 입력/출력 비용과 **prefix cache 동작 여부**를 확인해 보고한다(TODO #13).
+3. `bench/latency_profile.py`를 돌려 **출력 비중 표(요약), 고정 비용, prefix cache, 동시 처리량**을 보고한다(7.6의 표 기준, TODO #13).
+   사용자가 가장 궁금해하는 것은 "인프라가 좋은 사내 환경에서도 속도 이점이 의미 있는가"다. plain과의 절대 차이(ms)와 출력 비중을 먼저 말한다.
 4. Claude Code에 MCP를 등록한다. **사용자 설정 파일을 바꾸기 전에 확인을 받는다.**
 5. `bench/improve_eval.py`(비용 포함)로 사내 모델 기준선을 만들고 집 PC 결과(`bench/results_improve_cost_qwen3.5-4b_local.json`)와
    비교해 보고한다. 경향(도메인은 예시+보정, 일반은 raw, perm/cc 무효, thinking 초과)이 유지되는지가 핵심이다.

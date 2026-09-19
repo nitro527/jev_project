@@ -29,7 +29,7 @@ MCP 서버로 감싸 Claude Code / opencode에서 도구로 호출하기 위한 
 | `bench/bench_compare.py` | jev vs 일반 생성 60건 정량 비교 (기준 결과: `bench/results_qwen3.5-4b_local.json`) | 표준 라이브러리 |
 | `bench/improve_eval.py`, `bench/datasets.py` | 개선 기법(few-shot, 보정, 순서 섞기, cascade, plain+thinking) 비교 — 공개 실제 라벨 데이터(BGL 로그, BoolQ, AG News). 정확도·보정·판별력·**토큰·지연** | 표준 라이브러리 (데이터 받을 때만 pandas) |
 | `bench/verbal_vs_logprob.py` | "확률로 답해"(말로 한 확률) vs logprobs | 표준 라이브러리 |
-| `bench/latency_profile.py` | 입력/출력 시간 분리 + prefix cache 확인 | 표준 라이브러리 |
+| `bench/latency_profile.py` | 고정 비용·첫 토큰(TTFT)·토큰 간격(ITL) 분리, **전체 시간 중 출력 비중 표**, prefix cache, 동시 처리량 (기준: `bench/results_latency_qwen3.5-4b_local.json`) | 표준 라이브러리 |
 | `bench/think_budget.py` | thinking 예산별 판단 변화 | 표준 라이브러리 |
 | `bench/patterns_demo.py` | 추출·재정렬·계층 분류 데모 | 표준 라이브러리 |
 | `jev_local.py` | (집 PC) transformers로 전체 logits를 직접 읽는 기준 구현 | torch, transformers |

@@ -1,0 +1,126 @@
+{
+ "per_input_token_ms_slope": 0.27728246701994647,
+ "per_output_token_ms_slope": 49.65538110798408,
+ "jev_floor_ms": 77.46400000178255,
+ "stream": {
+  "short": {
+   "ttft": 76.22500002617016,
+   "itl": 48.71239999192767,
+   "in": 30,
+   "out": 32,
+   "total": 1622.6693999778945
+  },
+  "long": {
+   "ttft": 439.1966999974102,
+   "itl": 45.92499998398125,
+   "in": 1520,
+   "out": 32,
+   "total": 1901.0471999936271
+  },
+  "per_in": 0.24360516776593288,
+  "itl": 47.31869998795446
+ },
+ "breakdown": {
+  "short": {
+   "input_tokens": 30,
+   "rows": {
+    "Jev (출력 1토큰)": {
+     "total_ms": 76.22500002617016,
+     "first_ms": 76.22500002617016,
+     "gen_ms": 0.0,
+     "output_share": 0.0
+    },
+    "plain (출력 20토큰)": {
+     "total_ms": 975.2802997973049,
+     "first_ms": 76.22500002617016,
+     "gen_ms": 899.0552997711347,
+     "output_share": 0.9218429819181089
+    },
+    "thinking (출력 3,000토큰)": {
+     "total_ms": 141985.0062639016,
+     "first_ms": 76.22500002617016,
+     "gen_ms": 141908.78126387543,
+     "output_share": 0.9994631475390825
+    }
+   }
+  },
+  "long": {
+   "input_tokens": 1520,
+   "rows": {
+    "Jev (출력 1토큰)": {
+     "total_ms": 439.1966999974102,
+     "first_ms": 439.1966999974102,
+     "gen_ms": 0.0,
+     "output_share": 0.0
+    },
+    "plain (출력 20토큰)": {
+     "total_ms": 1338.251999768545,
+     "first_ms": 439.1966999974102,
+     "gen_ms": 899.0552997711347,
+     "output_share": 0.671813156211707
+    },
+    "thinking (출력 3,000토큰)": {
+     "total_ms": 142347.97796387284,
+     "first_ms": 439.1966999974102,
+     "gen_ms": 141908.78126387543,
+     "output_share": 0.9969146263524103
+    }
+   }
+  }
+ },
+ "throughput": [
+  {
+   "workload": "jev (출력 1)",
+   "concurrency": 1,
+   "wall_s": 0.6985034999961499,
+   "req_per_s": 11.453056427124697,
+   "latency_p50_ms": 82.91735000966582
+  },
+  {
+   "workload": "jev (출력 1)",
+   "concurrency": 4,
+   "wall_s": 0.5477726999961305,
+   "req_per_s": 14.60459785611169,
+   "latency_p50_ms": 273.0122999928426
+  },
+  {
+   "workload": "jev (출력 1)",
+   "concurrency": 8,
+   "wall_s": 0.6345866000046954,
+   "req_per_s": 12.606632412252019,
+   "latency_p50_ms": 378.455700003542
+  },
+  {
+   "workload": "생성 (출력 20)",
+   "concurrency": 1,
+   "wall_s": 8.140500000008615,
+   "req_per_s": 0.9827406178971235,
+   "latency_p50_ms": 1019.9387999891769
+  },
+  {
+   "workload": "생성 (출력 20)",
+   "concurrency": 4,
+   "wall_s": 9.059202300006291,
+   "req_per_s": 0.8830799594788213,
+   "latency_p50_ms": 4418.921949996729
+  },
+  {
+   "workload": "생성 (출력 20)",
+   "concurrency": 8,
+   "wall_s": 8.340062200004468,
+   "req_per_s": 0.9592254599726744,
+   "latency_p50_ms": 4767.106600003899
+  }
+ ],
+ "length_forcing_accepted": true,
+ "args": {
+  "reps": 3,
+  "stream_out": 32,
+  "gen_out": 20,
+  "think_out": 3000,
+  "concurrency": "1,4,8",
+  "n_requests": 8,
+  "skip_throughput": false,
+  "out": null
+ }
+}

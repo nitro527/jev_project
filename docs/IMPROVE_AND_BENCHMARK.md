@@ -233,6 +233,21 @@ thinking으로 풀이를 최대 N토큰 쓰게 한 뒤, **풀이 끝 자리에�
   (코드: `mock_vllm_server.py`의 `next_token`은 1회 통과, `generate`는 토큰마다 1회씩 추가 통과). 비공개인 진짜 Jev에는 해당하지 않을 수 있다.
 - [C] prefix cache 확인: 같은 긴 state 뒤에 질문만 바꿔 연속 호출해서, 두 번째부터 빨라지는지 본다. 가짜 서버에는 prefix cache가 없어서 차이가 없다.
   **사내 vLLM에서 반드시 확인한다**(Jev 방식은 질문마다 state를 다시 보내므로).
+- [D] 고정 비용: `GET /models` 왕복 13~15ms, 아주 짧은 프롬프트의 1토큰 판단 74~78ms(Jev 호출 1회의 바닥값).
+- [E] **스트리밍으로 직접 분리**: TTFT(첫 토큰까지) 짧은 입력 76ms / 긴 입력 439ms, 토큰 사이 간격(ITL) 약 47ms.
+  입력 처리는 1토큰당 약 0.24ms. 이 값으로 **전체 시간 = ① 첫 토큰까지 + ② (N−1) × ITL**로 나눠 출력 비중을 계산한다.
+
+| 입력 | 방식 | 전체 | ① 첫 토큰까지 | ② 출력 생성 | 출력 비중 | Jev 대비 |
+|---|---|---|---|---|---|---|
+| 짧음 (30) | Jev (1토큰) | 76ms | 76ms | 0 | 0% | 1배 |
+| | plain (20토큰) | 975ms | 76ms | 899ms | **92%** | 12.8배 |
+| | thinking (3,000토큰) | 142초 | 76ms | 141.9초 | 99.9% | 1,863배 |
+| 김 (1,520) | Jev (1토큰) | 439ms | 439ms | 0 | 0% | 1배 |
+| | plain (20토큰) | 1,338ms | 439ms | 899ms | **67%** | 3.0배 |
+| | thinking (3,000토큰) | 142초 | 439ms | 141.9초 | 99.7% | 324배 |
+
+  원본: `bench/results_latency_qwen3.5-4b_local.json`. 인프라가 좋아지면 절대 차이는 줄지만 출력 비중은 거의 그대로다(`docs/CONCEPTS.md` 5장).
+- [F] 동시 처리량: 가짜 서버는 요청을 락으로 하나씩 처리해서 동시성을 올려도 처리량이 그대로였다(1.0~1.3배). **vLLM의 배칭 효과는 사내에서만 잴 수 있다.**
 - 가짜 서버는 최적화 커널이 없어 출력이 특히 느리다. vLLM에서는 둘 다 빨라지지만 구조(출력이 훨씬 비쌈)는 같다.
 
 ### 3.8 이전 결과와의 관계
@@ -291,7 +306,7 @@ python bench/improve_eval.py --tasks bgl    # 빠른 확인 (약 1분)
 python bench/improve_eval.py --plain --cascade 10   # 전체 (가짜 서버 기준 약 40분)
 python bench/improve_eval.py --plain --cascade 10 --cascade-budget 1024 --plain-thinking 5   # 비용 비교 포함 (약 1.5시간)
 python bench/verbal_vs_logprob.py           # 말로 한 확률 vs logprobs (3.6)
-python bench/latency_profile.py             # 입력/출력 시간 분리 + prefix cache 확인 (3.7)
+python bench/latency_profile.py             # 고정 비용·첫 토큰·토큰 간격 분리, 출력 비중 표, prefix cache, 동시 처리량 (3.7)
 python bench/think_budget.py --budgets 256,1024   # 사고 예산 실험 (3.4)
 python bench/patterns_demo.py               # 추출·재정렬·계층 분류 데모
 ```
